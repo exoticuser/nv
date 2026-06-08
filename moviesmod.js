@@ -290,7 +290,11 @@ async function extractDownloadLinks(pageUrl) {
     const $ = cheerio.load(html);
     const links = [];
     const contentBox = $(".thecontent");
-    const headers = contentBox.find('h3:contains("Season"), h4');
+    const headers = contentBox.find('h3, h4').filter((i, el) => {
+      const tag = $(el);
+      // Include h3 tags that contain "Season" and all h4 tags
+      return tag.is('h4') || tag.text().toLowerCase().includes('season');
+    });
 
     headers.each((i, el) => {
       const header = $(el);
@@ -560,13 +564,13 @@ async function resolveDriveseedLink(driveseedUrl) {
 
     const downloadOptions = [];
 
-    const resumeLink = $('a:contains("Resume Cloud")').attr("href");
+    const resumeLink = $('a').filter((i, el) => $(el).text().includes('Resume Cloud')).attr("href");
     if (resumeLink) downloadOptions.push({ title: "Resume Cloud", type: "resume", url: `https://driveseed.org${resumeLink}`, priority: 1 });
 
-    const workerLink = $('a:contains("Resume Worker Bot")').attr("href");
+    const workerLink = $('a').filter((i, el) => $(el).text().includes('Resume Worker Bot')).attr("href");
     if (workerLink) downloadOptions.push({ title: "Resume Worker Bot", type: "worker", url: workerLink, priority: 2 });
 
-    const instantLink = $('a:contains("Instant Download")').attr("href");
+    const instantLink = $('a').filter((i, el) => $(el).text().includes('Instant Download')).attr("href");
     if (instantLink) downloadOptions.push({ title: "Instant Download", type: "instant", url: instantLink, priority: 3 });
 
     $('a[href*="/download/"]').each((i, el) => {
@@ -596,7 +600,7 @@ async function resolveResumeCloudLink(resumeUrl) {
     const response = await makeRequest(resumeUrl, { headers: { Referer: "https://driveseed.org/" } });
     const html = await response.text();
     const $ = cheerio.load(html);
-    return $('a:contains("Cloud Resume Download")').attr("href") || null;
+    return $('a').filter((i, el) => $(el).text().includes('Cloud Resume Download')).attr("href") || null;
   } catch (e) {
     console.error(`[MoviesMod] Resume Cloud error: ${e.message}`);
     return null;
