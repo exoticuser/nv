@@ -18,5 +18,21 @@
   "contentLanguage": [
     "en",
     "hi"
+  ],
+  "resources": [
+    "stream",
+    "meta"
+  ],
+  "catalogs": [
+    {
+      "type": "movie",
+      "id": "moviesmod_movies",
+      "name": "MoviesMod Movies"
+    },
+    {
+      "type": "tv",
+      "id": "moviesmod_series",
+      "name": "MoviesMod Series"
+    }
   ]
 }
