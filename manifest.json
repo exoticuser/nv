@@ -1,0 +1,22 @@
+{
+  "id": "MoviesMod",
+  "name": "MoviesMod",
+  "description": "MoviesMod - Hindi & English movies and series with multiple quality options",
+  "version": "1.0.0",
+  "author": "Phisher",
+  "supportedTypes": [
+    "movie",
+    "tv"
+  ],
+  "filename": "moviesmod.js",
+  "enabled": true,
+  "formats": [
+    "mp4",
+    "mkv"
+  ],
+  "logo": "https://moviesmod.army/wp-content/uploads/2024/01/cropped-moviesmod-32x32.png",
+  "contentLanguage": [
+    "en",
+    "hi"
+  ]
+}
