@@ -1,10 +1,11 @@
 // moviesmod.js
-// MoviesMod - Hindi/English movies & series provider
+// MoviesMod - Hindi/English movies & series provider (Stremio Addon)
 // Flow: TMDB title → search moviesmod.army → parse download page → resolve modpro/driveseed chain → final MP4/MKV URL
 
 const cheerio = require('cheerio-without-node-native');
 
 const BASE_URL = "https://moviesmod.army";
+const CINEMETA_URL = "https://aiometadata.elfhosted.com/stremio/9197a4a9-2f5b-4911-845e-8704c520bdf7/meta";
 const TMDB_API_KEY = "1865f43a0549ca50d341dd9ab8b29f49";
 
 const HEADERS = {
@@ -12,8 +13,95 @@ const HEADERS = {
   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
   "Accept-Language": "en-US,en;q=0.5",
   "Connection": "keep-alive",
-  "Upgrade-Insecure-Requests": "1"
+  "Upgrade-Insecure-Requests": "1",
+  "Referer": BASE_URL
 };
+
+// ================= UTILITY FUNCTIONS (from Utils.kt) =================
+
+// Safe hostname validation using endsWith() - ensures domain is at the END of the hostname
+// This prevents spoofing like "evilsite.comdriveseed.org" while allowing legitimate subdomains like "test.driveseed.org"
+function isValidDownloadUrl(url) {
+  try {
+    // Try to parse as a full URL first
+    const urlObj = new URL(url);
+    const hostname = urlObj.hostname || "";
+    return (
+      hostname.endsWith("driveseed.org") || 
+      hostname.endsWith("driveleech.org") ||
+      hostname.endsWith("tech.unblockedgames.world") ||
+      hostname.endsWith("tech.creativeexpressionsblog.com") || 
+      hostname.endsWith("tech.examzculture.in")
+    );
+  } catch (e) {
+    // Fallback for relative URLs - use regex to check hostname pattern
+    const hostMatch = url.match(/^(?:https?:\/\/)?([^\/:?#]+)/);
+    if (!hostMatch) return false;
+    
+    const host = hostMatch[1];
+    return (
+      host.endsWith("driveseed.org") || 
+      host.endsWith("driveleech.org") ||
+      host.endsWith("tech.unblockedgames.world") ||
+      host.endsWith("tech.creativeexpressionsblog.com") || 
+      host.endsWith("tech.examzculture.in")
+    );
+  }
+}
+
+function isTechUnblockedUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    const hostname = urlObj.hostname || "";
+    return (
+      hostname.endsWith("tech.unblockedgames.world") ||
+      hostname.endsWith("tech.creativeexpressionsblog.com") ||
+      hostname.endsWith("tech.examzculture.in") ||
+      hostname.endsWith("tech.examdegree.site")
+    );
+  } catch (e) {
+    // Fallback for relative URLs
+    const hostMatch = url.match(/^(?:https?:\/\/)?([^\/:?#]+)/);
+    if (!hostMatch) return false;
+    
+    const host = hostMatch[1];
+    return (
+      host.endsWith("tech.unblockedgames.world") ||
+      host.endsWith("tech.creativeexpressionsblog.com") ||
+      host.endsWith("tech.examzculture.in") ||
+      host.endsWith("tech.examdegree.site")
+    );
+  }
+}
+
+function isUnblockedUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    return urlObj.hostname.includes("unblocked");
+  } catch (e) {
+    return url.includes("unblocked");
+  }
+}
+
+function fixUrl(url, domain) {
+  if (url && url.startsWith("http")) return url;
+  if (!url || url === "") return "";
+  
+  const startsWithNoHttp = url.startsWith("//");
+  if (startsWithNoHttp) return "https:" + url;
+  
+  if (url.startsWith("/")) return domain + url;
+  return domain + "/" + url;
+}
+
+function getBaseUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    return `${urlObj.protocol}//${urlObj.hostname}`;
+  } catch (e) {
+    return url;
+  }
+}
 
 // ================= HELPERS =================
 
@@ -40,6 +128,98 @@ function getTechDetails(q) {
   if (t.includes("hevc") || t.includes("x265")) details.push("HEVC");
   if (t.includes("hdr")) details.push("HDR");
   return details;
+}
+
+async function bypass(url) {
+  try {
+    const host = getBaseUrl(url);
+    let res = await makeRequest(url);
+    let html = await res.text();
+    let $ = cheerio.load(html);
+    
+    let formUrl = $("form#landing").attr("action");
+    let formData = {};
+    $("form#landing input").each((i, el) => {
+      const name = $(el).attr("name");
+      const value = $(el).attr("value");
+      if (name) formData[name] = value || "";
+    });
+    
+    if (!formUrl) return null;
+    
+    // First POST
+    res = await makeRequest(formUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "Referer": url },
+      body: new URLSearchParams(formData).toString()
+    });
+    
+    html = await res.text();
+    $ = cheerio.load(html);
+    
+    formUrl = $("form#landing").attr("action");
+    formData = {};
+    $("form#landing input").each((i, el) => {
+      const name = $(el).attr("name");
+      const value = $(el).attr("value");
+      if (name) formData[name] = value || "";
+    });
+    
+    if (!formUrl) return null;
+    
+    // Second POST
+    res = await makeRequest(formUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "Referer": res.url || url },
+      body: new URLSearchParams(formData).toString()
+    });
+    
+    html = await res.text();
+    $ = cheerio.load(html);
+    
+    // Extract token from script
+    let skToken = null;
+    $("script").each((i, el) => {
+      const scriptData = $(el).html() || "";
+      if (scriptData.includes("?go=")) {
+        const match = scriptData.match(/\?go=([^"]+)/);
+        if (match) skToken = match[1];
+      }
+    });
+    
+    if (!skToken) return null;
+    
+    const driveUrl = await makeRequest(
+      host + "?go=" + skToken,
+      {
+        headers: {
+          "Cookie": skToken + "=" + (formData["_wp_http2"] || ""),
+          "Referer": res.url || url
+        }
+      }
+    );
+    
+    html = await driveUrl.text();
+    $ = cheerio.load(html);
+    
+    const refreshContent = $('meta[http-equiv="refresh"]').attr("content");
+    if (!refreshContent) return null;
+    
+    const urlMatch = refreshContent.match(/url=([^&]+)/i);
+    if (!urlMatch || !urlMatch[1]) return null;
+    
+    const actualDriveUrl = urlMatch[1].replace(/['"]/g, "");
+    const driveRes = await makeRequest(actualDriveUrl, { headers: { "Referer": res.url || url } });
+    const drivePath = await driveRes.text();
+    
+    const path = drivePath.match(/replace\("([^"]+)"\)/)?.[1];
+    if (!path || path === "/404") return null;
+    
+    return fixUrl(path, getBaseUrl(actualDriveUrl));
+  } catch (e) {
+    console.error(`[MoviesMod] Bypass error: ${e.message}`);
+    return null;
+  }
 }
 
 function findBestMatch(mainString, targetStrings) {
@@ -150,34 +330,34 @@ async function extractDownloadLinks(pageUrl) {
 async function resolveIntermediateLink(initialUrl, refererUrl) {
   try {
     const urlObj = new URL(initialUrl);
-
+    const hostname = urlObj.hostname;
+    
     // links.modpro.blog / posts.modpro.blog
-    if (urlObj.hostname.includes("links.modpro.blog") || urlObj.hostname.includes("posts.modpro.blog")) {
+    if (hostname.includes("links.modpro.blog") || hostname.includes("posts.modpro.blog")) {
       const response = await makeRequest(initialUrl, { headers: { Referer: refererUrl } });
       const html = await response.text();
       const $ = cheerio.load(html);
       const finalLinks = [];
 
-      $(".entry-content a").each((i, a) => {
+      // Primary search in entry-content
+      $(".entry-content a, .content a, main a").each((i, a) => {
         const href = $(a).attr("href") || "";
         const text = $(a).text().trim();
         if (
-          (href.includes("driveseed.org") || href.includes("tech.unblockedgames.world") ||
-           href.includes("tech.creativeexpressionsblog.com") || href.includes("tech.examzculture.in")) &&
+          isValidDownloadUrl(href) &&
           text && !text.toLowerCase().includes("batch")
         ) {
           finalLinks.push({ server: text.replace(/\s+/g, " "), url: href });
         }
       });
 
-      // Broader fallback if nothing in entry-content
+      // Fallback if nothing found
       if (finalLinks.length === 0) {
         $("a").each((i, a) => {
           const href = $(a).attr("href") || "";
           const text = $(a).text().trim();
           if (
-            (href.includes("driveseed.org") || href.includes("tech.unblockedgames.world") ||
-             href.includes("tech.creativeexpressionsblog.com") || href.includes("tech.examzculture.in")) &&
+            isValidDownloadUrl(href) &&
             text && !text.toLowerCase().includes("batch")
           ) {
             finalLinks.push({ server: text.replace(/\s+/g, " ") || "Download Link", url: href });
@@ -185,24 +365,33 @@ async function resolveIntermediateLink(initialUrl, refererUrl) {
         });
       }
 
-      console.log(`[MoviesMod] Found ${finalLinks.length} links from ${urlObj.hostname}`);
+      console.log(`[MoviesMod] Found ${finalLinks.length} links from ${hostname}`);
       return finalLinks;
     }
 
     // episodes.modpro.blog — per-episode links
-    if (urlObj.hostname.includes("episodes.modpro.blog")) {
+    if (hostname.includes("episodes.modpro.blog")) {
       const response = await makeRequest(initialUrl, { headers: { Referer: refererUrl } });
       const html = await response.text();
       const $ = cheerio.load(html);
       const finalLinks = [];
 
-      $("h3").each((i, el) => {
+      $("h3, h4").each((i, el) => {
         const headerText = $(el).text().trim();
-        const epMatch = headerText.match(/Episode\s+(\d+)/i);
+        const epMatch = headerText.match(/Episode\s+(\d+)/i) || headerText.match(/Ep\.?\s*(\d+)/i);
         if (epMatch) {
           const a = $(el).find("a").first();
-          const href = a.attr("href");
-          if (href) finalLinks.push({ server: `Episode ${epMatch[1]}`, url: href });
+          if (!a.length) {
+            // Try next sibling
+            const nextLink = $(el).nextUntil("h3, h4").find("a").first();
+            if (nextLink.length) {
+              const href = nextLink.attr("href");
+              if (href) finalLinks.push({ server: `Episode ${epMatch[1]}`, url: href });
+            }
+          } else {
+            const href = a.attr("href");
+            if (href) finalLinks.push({ server: `Episode ${epMatch[1]}`, url: href });
+          }
         }
       });
 
@@ -211,29 +400,34 @@ async function resolveIntermediateLink(initialUrl, refererUrl) {
     }
 
     // modrefer.in — base64 encoded redirect
-    if (urlObj.hostname.includes("modrefer.in")) {
+    if (hostname.includes("modrefer.in")) {
       const encodedUrl = urlObj.searchParams.get("url");
       if (!encodedUrl) return [];
-      const decodedUrl = atob(encodedUrl);
+      
+      let decodedUrl;
+      try {
+        decodedUrl = atob(encodedUrl);
+      } catch (e) {
+        console.error(`[MoviesMod] Base64 decode error: ${e.message}`);
+        return [];
+      }
+      
       const response = await makeRequest(decodedUrl, { headers: { Referer: refererUrl } });
       const html = await response.text();
       const $ = cheerio.load(html);
       const finalLinks = [];
 
-      $(".timed-content-client_show_0_5_0 a").each((i, a) => {
+      $(".timed-content-client_show_0_5_0 a, .timed-show a").each((i, a) => {
         const href = $(a).attr("href");
         const text = $(a).text().trim();
-        if (href) finalLinks.push({ server: text, url: href });
+        if (href && text) finalLinks.push({ server: text, url: href });
       });
 
       if (finalLinks.length === 0) {
         $("a").each((i, a) => {
           const href = $(a).attr("href") || "";
           const text = $(a).text().trim();
-          if (
-            href.includes("driveseed.org") || href.includes("tech.unblockedgames.world") ||
-            href.includes("tech.examzculture.in") || href.includes("tech.creativeexpressionsblog.com")
-          ) {
+          if (isValidDownloadUrl(href)) {
             finalLinks.push({ server: text || "Download Link", url: href });
           }
         });
@@ -255,55 +449,79 @@ async function resolveIntermediateLink(initialUrl, refererUrl) {
 async function resolveTechUnblockedLink(sidUrl) {
   try {
     console.log(`[MoviesMod] Resolving SID link: ${sidUrl}`);
-    const response = await makeRequest(sidUrl);
-    const html = await response.text();
-    const $ = cheerio.load(html);
+    
+    let response = await makeRequest(sidUrl);
+    let html = await response.text();
+    let $ = cheerio.load(html);
 
-    const form = $("#landing");
-    const wp_http = form.find('input[name="_wp_http"]').val();
-    const action1 = form.attr("action");
-    if (!wp_http || !action1) return null;
+    let form = $("#landing");
+    let wp_http = form.find('input[name="_wp_http"]').val();
+    let action1 = form.attr("action");
+    
+    if (!wp_http || !action1) {
+      // Try bypass method
+      const bypassUrl = await bypass(sidUrl);
+      if (bypassUrl) return bypassUrl;
+      return null;
+    }
 
-    const res1 = await makeRequest(action1, {
+    // First POST request
+    response = await makeRequest(action1, {
       method: "POST",
       headers: { Referer: sidUrl, "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ _wp_http: wp_http }).toString()
     });
 
-    const html2 = await res1.text();
-    const $2 = cheerio.load(html2);
-    const form2 = $2("#landing");
-    const action2 = form2.attr("action");
-    const wp_http2 = form2.find('input[name="_wp_http2"]').val();
-    const token = form2.find('input[name="token"]').val();
-    if (!action2) return null;
+    html = await response.text();
+    $ = cheerio.load(html);
+    
+    form = $("#landing");
+    let action2 = form.attr("action");
+    let wp_http2 = form.find('input[name="_wp_http2"]').val();
+    let token = form.find('input[name="token"]').val();
+    
+    if (!action2 || !wp_http2) return null;
 
-    const res2 = await makeRequest(action2, {
+    // Second POST request
+    response = await makeRequest(action2, {
       method: "POST",
-      headers: { Referer: res1.url, "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ _wp_http2: wp_http2, token }).toString()
+      headers: { Referer: response.url || sidUrl, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ _wp_http2: wp_http2, token: token || "" }).toString()
     });
 
-    const finalHtml = await res2.text();
-    const cookieMatch = finalHtml.match(/s_343\('([^']+)',\s*'([^']+)'/);
-    const linkMatch = finalHtml.match(/c\.setAttribute\("href",\s*"([^"]+)"\)/);
-    if (!cookieMatch || !linkMatch) return null;
+    html = await response.text();
+    
+    // Extract cookie and final link
+    const cookieMatch = html.match(/s_343\('([^']+)',\s*'([^']+)'/);
+    const linkMatch = html.match(/c\.setAttribute\("href",\s*"([^"]+)"\)/);
+    
+    if (!cookieMatch || !linkMatch) {
+      // Try alternate pattern
+      const altLinkMatch = html.match(/window\.location\s*=\s*['"]([^'"]+)['"]/);
+      if (altLinkMatch) return altLinkMatch[1];
+      return null;
+    }
 
     const cookieName = cookieMatch[1].trim();
     const cookieValue = cookieMatch[2].trim();
     const finalPath = linkMatch[1].trim();
-    const finalUrl = new URL(finalPath, new URL(sidUrl).origin).href;
+    
+    const sidUrlObj = new URL(sidUrl);
+    const finalUrl = new URL(finalPath, sidUrlObj.origin).href;
 
-    const finalRes = await makeRequest(finalUrl, {
-      headers: { Referer: res2.url, Cookie: `${cookieName}=${cookieValue}` }
+    // Final request with cookie
+    response = await makeRequest(finalUrl, {
+      headers: { Referer: response.url || sidUrl, Cookie: `${cookieName}=${cookieValue}` }
     });
 
-    const metaHtml = await finalRes.text();
-    const $3 = cheerio.load(metaHtml);
-    const meta = $3('meta[http-equiv="refresh"]');
+    html = await response.text();
+    $ = cheerio.load(html);
+    
+    // Check for refresh meta tag
+    const meta = $('meta[http-equiv="refresh"]');
     if (meta.length > 0) {
       const content = meta.attr("content");
-      const urlMatch = content.match(/url=(.*)/i);
+      const urlMatch = content.match(/url=([^\s"']+)/i);
       if (urlMatch && urlMatch[1]) {
         const driveleechUrl = urlMatch[1].replace(/['"]/g, "");
         console.log(`[MoviesMod] SID resolved → ${driveleechUrl}`);
@@ -454,19 +672,30 @@ async function processDownloadLink(link, selectedResult, mediaType, episodeNum) 
       try {
         let currentUrl = tl.url;
 
-        // Resolve SID links first
-        if (
-          currentUrl.includes("tech.unblockedgames.world") ||
-          currentUrl.includes("tech.creativeexpressionsblog.com") ||
-          currentUrl.includes("tech.examzculture.in") ||
-          currentUrl.includes("tech.examdegree.site")
-        ) {
+        // Handle unblocked links with bypass
+        if (isUnblockedUrl(currentUrl)) {
+          const bypassUrl = await bypass(currentUrl);
+          if (!bypassUrl) continue;
+          currentUrl = bypassUrl;
+        }
+
+        // Resolve SID links (tech.unblockedgames, tech.creative, tech.examz, etc.)
+        if (isTechUnblockedUrl(currentUrl)) {
           const resolved = await resolveTechUnblockedLink(currentUrl);
           if (!resolved || resolved.includes("report-broken-links") || resolved.includes("moviesmod.wiki")) continue;
           currentUrl = resolved;
         }
 
-        if (!currentUrl || !currentUrl.includes("driveseed.org")) continue;
+        // Ensure we have a valid driveseed link
+        if (!currentUrl) continue;
+        
+        try {
+          const urlObj = new URL(currentUrl);
+          if (!urlObj.hostname.endsWith("driveseed.org")) continue;
+        } catch (e) {
+          // For relative URLs, check if it starts with /
+          if (!currentUrl.startsWith("/") && !currentUrl.match(/^https?:\/\/.*driveseed\.org/)) continue;
+        }
 
         const { downloadOptions, size, fileName } = await resolveDriveseedLink(currentUrl);
         if (!downloadOptions || downloadOptions.length === 0) continue;
